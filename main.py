@@ -3,6 +3,7 @@ import cv2
 import time
 import threading
 from djitellopy import Tello
+from djitellopy.tello import TelloException
 import numpy as np
 
 from pika import BlockingConnection, ConnectionParameters
@@ -12,7 +13,7 @@ from json import dumps
 config = load_dotenv()
 exchange = "drone"      # exchange name
 send_to = "receive"     # routing key
-receive_from = "sent"   # routing key
+receive_from = "send"   # routing key
 
 connection = BlockingConnection(ConnectionParameters(host='localhost'))
 channel = connection.channel()
@@ -26,7 +27,7 @@ channel.queue_bind(exchange=exchange, queue=callback_queue, routing_key=receive_
 stream_ready = threading.Event()
 frame = None
 drone = Tello()
-drone.connect()
+# drone.connect()
 state = "idle"
 
 
@@ -94,31 +95,45 @@ def stream_video(drone: Tello) -> None:
     cv2.destroyAllWindows()
 
 def patrol():
-    # Initialize the drone, connect to it, and turn its video stream on.
-    drone.streamon()
-    print("drone connected and stream on. Starting video stream thread.\n")
+    try:
+        # Initialize the drone, connect to it, and turn its video stream on.
+        drone.streamon()
+        print("drone connected and stream on. Starting video stream thread.\n")
 
-    # Create and start the streaming thread
-    stream_thread = threading.Thread(target=stream_video, args=(drone,))
+        # Create and start the streaming thread
+        stream_thread = threading.Thread(target=stream_video, args=(drone,))
 
-    # Set thread as a daemon thread to have it run in the background.
-    # This allows our program to exit even if this streaming thread is still running after calling drone.reboot()
-    # Also, this prevents errors in our video stream function from crashing our entire program if they occur.
-    stream_thread.daemon = True
+        # Set thread as a daemon thread to have it run in the background.
+        # This allows our program to exit even if this streaming thread is still running after calling drone.reboot()
+        # Also, this prevents errors in our video stream function from crashing our entire program if they occur.
+        stream_thread.daemon = True
 
-    # Start the thread
-    stream_thread.start()
+        # Start the thread
+        stream_thread.start()
 
-    # Execute the flight routine
-    flight_routine(drone)
+        # Execute the flight routine
+        flight_routine(drone)
 
-    print("Flight routine ended. Rebooting drone now...")
+        print("Flight routine ended. Rebooting drone now...")
 
-    # Reboot the drone at the end
-    drone.reboot()
+        # Reboot the drone at the end
+        drone.reboot()
+    except TelloException:
+        print("An error occurred in the patrol function")
 
 def status() -> dict:
-    drone = Tello()
+    try:
+        battery = drone.get_battery()
+    except Exception as e:
+        battery = None
+        print("Error getting battery status:", e)
+
+    try:
+        height = drone.get_height()
+    except Exception as e:
+        height = None
+        print("Error getting height status:", e)
+
     status = {
         "battery": drone.get_battery(),
         "height": drone.get_height(),
