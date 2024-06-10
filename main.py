@@ -7,15 +7,16 @@ from djitellopy.tello import TelloException
 import numpy as np
 
 from pika import BlockingConnection, ConnectionParameters
-from dotenv import load_dotenv
+from dotenv import dotenv_values
 from json import dumps
+import http.server
 
-config = load_dotenv()
+config = dotenv_values()
 exchange = "drone"      # exchange name
 send_to = "receive"     # routing key
 receive_from = "send"   # routing key
 
-connection = BlockingConnection(ConnectionParameters(host='localhost'))
+connection = BlockingConnection(ConnectionParameters(host=config["RABBITMQ_HOST"]))
 channel = connection.channel()
 channel.exchange_declare(exchange=exchange, exchange_type='direct')
 channel.queue_declare(queue="", exclusive=True)
@@ -149,15 +150,31 @@ def callback(ch, method, properties, body):
 
     if body == "patrol" and state == "idle":
         print("Starting patrol")
-        patrol()
+        # patrol()
+        files = sorted(os.listdir("./"), key=lambda x: os.path.getctime(f"./{x}"))
+
+        picture_path = f"http://{config["IP_ADDRESS"]}:8000/{files[-1]}"
+
+        channel.basic_publish(exchange=exchange, routing_key=send_to, body="picture " + picture_path)
+
     elif body == "patrol" and state == "patrol":
         print("Drone is already patrolling")
     elif body == "status":
         channel.basic_publish(exchange=exchange, routing_key=send_to, body="status " + dumps(status()))
 
 
+def start_http_server():
+    web_dir = os.path.join(os.path.dirname(__file__), 'pictures')
+    os.chdir(web_dir)
+    Handler = http.server.SimpleHTTPRequestHandler
+    httpd = http.server.HTTPServer(('0.0.0.0', 8000), Handler)
+    httpd.serve_forever()
+
+
 if __name__ == "__main__":
-    # Run the main function if this script is executed
-    # main()
+    sv = threading.Thread(target=start_http_server)
+    sv.daemon = True
+    sv.start()
+
     channel.basic_consume(queue=callback_queue, on_message_callback=callback, auto_ack=True)
     channel.start_consuming()
