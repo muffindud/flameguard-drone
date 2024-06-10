@@ -5,8 +5,30 @@ import threading
 from djitellopy import Tello
 import numpy as np
 
+from pika import BlockingConnection, ConnectionParameters
+from dotenv import load_dotenv
+from json import dumps
+
+config = load_dotenv()
+exchange = "drone"      # exchange name
+send_to = "receive"     # routing key
+receive_from = "sent"   # routing key
+
+connection = BlockingConnection(ConnectionParameters(host='localhost'))
+channel = connection.channel()
+channel.exchange_declare(exchange=exchange, exchange_type='direct')
+channel.queue_declare(queue="", exclusive=True)
+result = channel.queue_declare(queue="", exclusive=True)
+callback_queue = result.method.queue
+channel.queue_bind(exchange=exchange, queue=callback_queue, routing_key=receive_from)
+
 # Declare a threading Event to signal readiness of video streaming
 stream_ready = threading.Event()
+frame = None
+drone = Tello()
+drone.connect()
+state = "idle"
+
 
 def take_picture(frame: np.ndarray) -> None:
     try:
@@ -19,8 +41,9 @@ def take_picture(frame: np.ndarray) -> None:
     except Exception as pic_exception:
         print('An exception occurred in the take_picture function', pic_exception)
 
-def flight_routine(drone):
+def flight_routine(drone: Tello) -> None:
     print("waiting for event to signal video stream readiness")
+    state = "patrol"
 
     # Wait for the event signaling video stream readiness
     stream_ready.wait()
@@ -35,17 +58,21 @@ def flight_routine(drone):
     print("move up\n")
     drone.move_up(20)
     print("move back\n")
+    take_picture(frame)
     drone.move_back(20)
     print("move down\n")
     drone.move_down(20)
     print("rotate CW\n")
     drone.rotate_clockwise(180)
     print("rotate CCW\n")
+    take_picture(frame)
     drone.rotate_counter_clockwise(180)
     print("land")
     drone.land()
 
-def stream_video(drone):
+    state = "idle"
+
+def stream_video(drone: Tello) -> None:
     while True:
         frame = drone.get_frame_read().frame
         # Check if frame reading was successful
@@ -66,10 +93,8 @@ def stream_video(drone):
 
     cv2.destroyAllWindows()
 
-def main():
+def patrol():
     # Initialize the drone, connect to it, and turn its video stream on.
-    drone = Tello()
-    drone.connect()
     drone.streamon()
     print("drone connected and stream on. Starting video stream thread.\n")
 
@@ -92,6 +117,32 @@ def main():
     # Reboot the drone at the end
     drone.reboot()
 
+def status() -> dict:
+    drone = Tello()
+    status = {
+        "battery": drone.get_battery(),
+        "height": drone.get_height(),
+        "state": state
+    }
+
+    return status
+
+
+def callback(ch, method, properties, body):
+    body = body.decode()
+    print(f"Received: {body}")
+
+    if body == "patrol" and state == "idle":
+        print("Starting patrol")
+        patrol()
+    elif body == "patrol" and state == "patrol":
+        print("Drone is already patrolling")
+    elif body == "status":
+        channel.basic_publish(exchange=exchange, routing_key=send_to, body="status " + dumps(status()))
+
+
 if __name__ == "__main__":
     # Run the main function if this script is executed
-    main()
+    # main()
+    channel.basic_consume(queue=callback_queue, on_message_callback=callback, auto_ack=True)
+    channel.start_consuming()
